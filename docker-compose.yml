@@ -1,0 +1,97 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: orderuser
+      POSTGRES_PASSWORD: orderpass
+      POSTGRES_DB: orderdb
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orderuser -d orderdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  product-service:
+    build: ./product-service
+    container_name: product-service
+    environment:
+      PORT: 4001
+      MONGO_URI: mongodb://mongo:27017/productdb
+    expose:
+      - "4001"
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  order-service:
+    build: ./order-service
+    container_name: order-service
+    environment:
+      PORT: 4002
+      DATABASE_URL: postgresql://orderuser:orderpass@postgres:5432/orderdb
+      API_GATEWAY_URL: http://api-gateway/
+    expose:
+      - "4002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  user-service:
+    build: ./user-service
+    container_name: user-service
+    environment:
+      PORT: 4003
+      REDIS_URL: redis://redis:6379
+    expose:
+      - "4003"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend-gateway:
+    build: ./frontend-gateway
+    container_name: frontend-gateway
+    expose:
+      - "8080"
+    depends_on:
+      - product-service
+      - order-service
+      - user-service
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    ports:
+      - "80:80"
+    depends_on:
+      - frontend-gateway
+      - product-service
+      - order-service
+      - user-service
+
+volumes:
+  mongo-data:
+  postgres-data:
