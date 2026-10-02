@@ -10,12 +10,12 @@ pipeline {
     }
 
     environment {
-        AWS_REGION    = 'ap-south-1'
-        AWS_ACCOUNT_ID = 'YOUR_AWS_ACCOUNT_ID'
-        ECR_REGISTRY  = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        AWS_REGION     = 'ap-south-1'
+        AWS_ACCOUNT_ID = '426714791148'
+        ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-        KUBECONFIG    = '/var/lib/jenkins/.kube/config'
-        K8S_NAMESPACE = 'devops-ecommerce'
+        KUBECONFIG     = '/var/lib/jenkins/.kube/config'
+        K8S_NAMESPACE  = 'devops-ecommerce'
 
         ROLLBACK_ENABLED = 'true'
     }
@@ -24,8 +24,10 @@ pipeline {
 
         stage('Checkout') {
             steps {
-                git branch: 'main',
+                git(
+                    branch: 'main',
                     url: 'https://github.com/veeraprasadkoduri-cmd/Goodstock-Ecommerce-microservices.git'
+                )
             }
         }
 
@@ -55,9 +57,11 @@ pipeline {
                     env.USER_IMAGE =
                         "${ECR_REGISTRY}/goodstock-user"
 
-                    echo "AWS Region : ${AWS_REGION}"
-                    echo "ECR Registry : ${ECR_REGISTRY}"
-                    echo "Image Tag : ${IMAGE_TAG}"
+                    echo "========================================"
+                    echo "AWS Region    : ${AWS_REGION}"
+                    echo "ECR Registry  : ${ECR_REGISTRY}"
+                    echo "Image Tag     : ${IMAGE_TAG}"
+                    echo "========================================"
                 }
             }
         }
@@ -94,13 +98,12 @@ pipeline {
                         ).trim()
 
                         if (fallbackOutput) {
-                            changedFiles =
-                                fallbackOutput
-                                    .split('\\n')
-                                    .collect { it.trim() }
-                                    .findAll { it }
-                                    .unique()
-                                    .sort()
+                            changedFiles = fallbackOutput
+                                .split('\\n')
+                                .collect { it.trim() }
+                                .findAll { it }
+                                .unique()
+                                .sort()
                         }
                     }
 
@@ -168,15 +171,17 @@ pipeline {
                     ) ? 'true' : 'false'
 
                     echo """
-                    Change Detection
-                    ================================
+                    ========================================
+                    CHANGE DETECTION
+                    ========================================
                     API Gateway : ${env.API_GATEWAY_CHANGED}
                     Frontend    : ${env.FRONTEND_CHANGED}
                     Product     : ${env.PRODUCT_CHANGED}
                     Order       : ${env.ORDER_CHANGED}
                     User        : ${env.USER_CHANGED}
-                    ================================
+                    ----------------------------------------
                     Any App     : ${env.ANY_APP_CHANGED}
+                    ========================================
                     """
                 }
             }
@@ -187,18 +192,32 @@ pipeline {
                 sh '''
                     set -eux
 
+                    echo "Checking Git..."
                     git diff --check
 
+                    echo "Checking Dockerfiles..."
                     test -f api-gateway/Dockerfile
                     test -f frontend-gateway/Dockerfile
                     test -f product-service/Dockerfile
                     test -f order-service/Dockerfile
                     test -f user-service/Dockerfile
 
+                    echo "Checking Docker..."
                     docker --version
+
+                    echo "Checking AWS CLI..."
                     aws --version
+
+                    echo "Checking kubectl..."
                     kubectl version --client
 
+                    echo "Checking AWS identity..."
+                    aws sts get-caller-identity
+
+                    echo "Checking Kubernetes..."
+                    kubectl get nodes
+
+                    echo "Checking namespace..."
                     kubectl get namespace ${K8S_NAMESPACE}
                 '''
             }
@@ -295,6 +314,8 @@ pipeline {
                 sh '''
                     set -e
 
+                    echo "Logging into Amazon ECR..."
+
                     aws ecr get-login-password \
                       --region ${AWS_REGION} | \
                     docker login \
@@ -361,6 +382,8 @@ pipeline {
 
             steps {
                 script {
+
+                    echo "Deploying changed services to K3s..."
 
                     if (env.API_GATEWAY_CHANGED == 'true') {
                         sh '''
@@ -479,6 +502,8 @@ pipeline {
                 sh '''
                     set -eux
 
+                    echo "Running smoke tests..."
+
                     curl --fail \
                       --retry 5 \
                       --retry-delay 3 \
@@ -503,9 +528,10 @@ pipeline {
         stage('Deployment Summary') {
             steps {
                 sh '''
-                    echo "======================================"
-                    echo "Goodstock Deployment Summary"
-                    echo "======================================"
+                    echo ""
+                    echo "========================================"
+                    echo "GOODSTOCK DEPLOYMENT SUMMARY"
+                    echo "========================================"
 
                     echo "Image Tag: ${IMAGE_TAG}"
 
@@ -536,6 +562,9 @@ pipeline {
 
                     kubectl get svc \
                       -n ${K8S_NAMESPACE}
+
+                    echo ""
+                    echo "========================================"
                 '''
             }
         }
@@ -544,13 +573,18 @@ pipeline {
     post {
 
         success {
-            echo 'CI/CD pipeline completed successfully.'
-            echo "Image tag: ${env.IMAGE_TAG}"
+            echo '========================================'
+            echo 'CI/CD PIPELINE COMPLETED SUCCESSFULLY'
+            echo '========================================'
+            echo "Image Tag: ${env.IMAGE_TAG}"
         }
 
         failure {
 
-            echo 'Pipeline failed. Starting automatic rollback.'
+            echo '========================================'
+            echo 'PIPELINE FAILED'
+            echo 'Starting automatic rollback...'
+            echo '========================================'
 
             script {
 
@@ -558,61 +592,56 @@ pipeline {
 
                     if (env.API_GATEWAY_CHANGED == 'true') {
                         sh '''
-                            kubectl rollout undo deployment/api-gateway \
+                            kubectl rollout undo \
+                              deployment/api-gateway \
                               -n ${K8S_NAMESPACE} || true
                         '''
                     }
 
                     if (env.FRONTEND_CHANGED == 'true') {
                         sh '''
-                            kubectl rollout undo deployment/frontend-gateway \
+                            kubectl rollout undo \
+                              deployment/frontend-gateway \
                               -n ${K8S_NAMESPACE} || true
                         '''
                     }
 
                     if (env.PRODUCT_CHANGED == 'true') {
                         sh '''
-                            kubectl rollout undo deployment/product-service \
+                            kubectl rollout undo \
+                              deployment/product-service \
                               -n ${K8S_NAMESPACE} || true
                         '''
                     }
 
                     if (env.ORDER_CHANGED == 'true') {
                         sh '''
-                            kubectl rollout undo deployment/order-service \
+                            kubectl rollout undo \
+                              deployment/order-service \
                               -n ${K8S_NAMESPACE} || true
                         '''
                     }
 
                     if (env.USER_CHANGED == 'true') {
                         sh '''
-                            kubectl rollout undo deployment/user-service \
+                            kubectl rollout undo \
+                              deployment/user-service \
                               -n ${K8S_NAMESPACE} || true
                         '''
                     }
                 }
             }
 
-            echo 'Collecting Kubernetes diagnostics.'
+            echo 'Collecting Kubernetes diagnostics...'
 
             sh '''
                 kubectl get pods \
                   -n ${K8S_NAMESPACE} \
                   -o wide || true
 
+                echo ""
+
                 kubectl get events \
                   -n ${K8S_NAMESPACE} \
-                  --sort-by=.lastTimestamp \
-                  | tail -40 || true
-            '''
-        }
-
-        always {
-            sh '''
-                docker logout ${ECR_REGISTRY} || true
-                docker image prune -f || true
-            '''
-        }
-    }
-}
+                  --sort-by=.lastTime
 ```
