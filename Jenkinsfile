@@ -1,3 +1,4 @@
+```groovy
 pipeline {
     agent any
 
@@ -9,8 +10,13 @@ pipeline {
     }
 
     environment {
+        AWS_REGION    = 'ap-south-1'
+        AWS_ACCOUNT_ID = 'YOUR_AWS_ACCOUNT_ID'
+        ECR_REGISTRY  = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
         KUBECONFIG    = '/var/lib/jenkins/.kube/config'
         K8S_NAMESPACE = 'devops-ecommerce'
+
         ROLLBACK_ENABLED = 'true'
     }
 
@@ -18,45 +24,40 @@ pipeline {
 
         stage('Checkout') {
             steps {
-                checkout scm
+                git branch: 'main',
+                    url: 'https://github.com/veeraprasadkoduri-cmd/Goodstock-Ecommerce-microservices.git'
             }
         }
 
         stage('Initialize') {
             steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-creds',
-                        usernameVariable: 'DOCKERHUB_USER',
-                        passwordVariable: 'DOCKERHUB_TOKEN'
-                    )
-                ]) {
-                    script {
-                        def shortCommit = sh(
-                            script: 'git rev-parse --short=7 HEAD',
-                            returnStdout: true
-                        ).trim()
+                script {
 
-                        env.IMAGE_TAG = "${env.BUILD_NUMBER}-${shortCommit}"
+                    def shortCommit = sh(
+                        script: 'git rev-parse --short=7 HEAD',
+                        returnStdout: true
+                    ).trim()
 
-                        env.API_GATEWAY_IMAGE =
-                            "${DOCKERHUB_USER}/devops-ecommerce-api-gateway"
+                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${shortCommit}"
 
-                        env.FRONTEND_IMAGE =
-                            "${DOCKERHUB_USER}/devops-ecommerce-frontend"
+                    env.API_GATEWAY_IMAGE =
+                        "${ECR_REGISTRY}/goodstock-api-gateway"
 
-                        env.PRODUCT_IMAGE =
-                            "${DOCKERHUB_USER}/devops-ecommerce-product"
+                    env.FRONTEND_IMAGE =
+                        "${ECR_REGISTRY}/goodstock-frontend"
 
-                        env.ORDER_IMAGE =
-                            "${DOCKERHUB_USER}/devops-ecommerce-order"
+                    env.PRODUCT_IMAGE =
+                        "${ECR_REGISTRY}/goodstock-product"
 
-                        env.USER_IMAGE =
-                            "${DOCKERHUB_USER}/devops-ecommerce-user"
+                    env.ORDER_IMAGE =
+                        "${ECR_REGISTRY}/goodstock-order"
 
-                        echo "Image tag: ${env.IMAGE_TAG}"
-                        echo "Docker Hub namespace loaded dynamically"
-                    }
+                    env.USER_IMAGE =
+                        "${ECR_REGISTRY}/goodstock-user"
+
+                    echo "AWS Region : ${AWS_REGION}"
+                    echo "ECR Registry : ${ECR_REGISTRY}"
+                    echo "Image Tag : ${IMAGE_TAG}"
                 }
             }
         }
@@ -80,7 +81,7 @@ pipeline {
                     if (changedFiles.isEmpty()) {
 
                         echo "Jenkins changelog is empty."
-                        echo "Falling back to current Git commit."
+                        echo "Checking current Git commit."
 
                         def fallbackOutput = sh(
                             script: '''
@@ -106,7 +107,7 @@ pipeline {
                     if (changedFiles.isEmpty()) {
 
                         echo "No reliable changed-file list available."
-                        echo "Safely treating all application services as changed."
+                        echo "Building all application services."
 
                         env.API_GATEWAY_CHANGED = 'true'
                         env.FRONTEND_CHANGED    = 'true'
@@ -116,7 +117,7 @@ pipeline {
 
                         writeFile(
                             file: 'changed-files.txt',
-                            text: 'Change list unavailable - safe full build\n'
+                            text: 'Full application build\n'
                         )
 
                     } else {
@@ -167,16 +168,15 @@ pipeline {
                     ) ? 'true' : 'false'
 
                     echo """
-                    Change detection result:
-                    --------------------------------
+                    Change Detection
+                    ================================
                     API Gateway : ${env.API_GATEWAY_CHANGED}
                     Frontend    : ${env.FRONTEND_CHANGED}
                     Product     : ${env.PRODUCT_CHANGED}
                     Order       : ${env.ORDER_CHANGED}
                     User        : ${env.USER_CHANGED}
-                    --------------------------------
+                    ================================
                     Any App     : ${env.ANY_APP_CHANGED}
-                    --------------------------------
                     """
                 }
             }
@@ -196,6 +196,8 @@ pipeline {
                     test -f user-service/Dockerfile
 
                     docker --version
+                    aws --version
+                    kubectl version --client
 
                     kubectl get namespace ${K8S_NAMESPACE}
                 '''
@@ -282,7 +284,7 @@ pipeline {
             }
         }
 
-        stage('Push Images') {
+        stage('Login to ECR') {
             when {
                 expression {
                     env.ANY_APP_CHANGED == 'true'
@@ -290,64 +292,62 @@ pipeline {
             }
 
             steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-creds',
-                        usernameVariable: 'DOCKERHUB_USER',
-                        passwordVariable: 'DOCKERHUB_TOKEN'
-                    )
-                ]) {
+                sh '''
+                    set -e
 
-                    sh '''
-                        set +x
+                    aws ecr get-login-password \
+                      --region ${AWS_REGION} | \
+                    docker login \
+                      --username AWS \
+                      --password-stdin ${ECR_REGISTRY}
+                '''
+            }
+        }
 
-                        echo "$DOCKERHUB_TOKEN" | \
-                          docker login \
-                          -u "$DOCKERHUB_USER" \
-                          --password-stdin
+        stage('Push Images to ECR') {
+            when {
+                expression {
+                    env.ANY_APP_CHANGED == 'true'
+                }
+            }
 
-                        set -x
-                    '''
+            steps {
+                script {
 
-                    script {
-
-                        if (env.API_GATEWAY_CHANGED == 'true') {
-                            sh '''
-                                docker push \
-                                  ${API_GATEWAY_IMAGE}:${IMAGE_TAG}
-                            '''
-                        }
-
-                        if (env.FRONTEND_CHANGED == 'true') {
-                            sh '''
-                                docker push \
-                                  ${FRONTEND_IMAGE}:${IMAGE_TAG}
-                            '''
-                        }
-
-                        if (env.PRODUCT_CHANGED == 'true') {
-                            sh '''
-                                docker push \
-                                  ${PRODUCT_IMAGE}:${IMAGE_TAG}
-                            '''
-                        }
-
-                        if (env.ORDER_CHANGED == 'true') {
-                            sh '''
-                                docker push \
-                                  ${ORDER_IMAGE}:${IMAGE_TAG}
-                            '''
-                        }
-
-                        if (env.USER_CHANGED == 'true') {
-                            sh '''
-                                docker push \
-                                  ${USER_IMAGE}:${IMAGE_TAG}
-                            '''
-                        }
+                    if (env.API_GATEWAY_CHANGED == 'true') {
+                        sh '''
+                            docker push \
+                              ${API_GATEWAY_IMAGE}:${IMAGE_TAG}
+                        '''
                     }
 
-                    sh 'docker logout'
+                    if (env.FRONTEND_CHANGED == 'true') {
+                        sh '''
+                            docker push \
+                              ${FRONTEND_IMAGE}:${IMAGE_TAG}
+                        '''
+                    }
+
+                    if (env.PRODUCT_CHANGED == 'true') {
+                        sh '''
+                            docker push \
+                              ${PRODUCT_IMAGE}:${IMAGE_TAG}
+                        '''
+                    }
+
+                    if (env.ORDER_CHANGED == 'true') {
+                        sh '''
+                            docker push \
+                              ${ORDER_IMAGE}:${IMAGE_TAG}
+                        '''
+                    }
+
+                    if (env.USER_CHANGED == 'true') {
+                        sh '''
+                            docker push \
+                              ${USER_IMAGE}:${IMAGE_TAG}
+                        '''
+                    }
                 }
             }
         }
@@ -503,10 +503,14 @@ pipeline {
         stage('Deployment Summary') {
             steps {
                 sh '''
-                    echo "Pipeline image tag: ${IMAGE_TAG}"
+                    echo "======================================"
+                    echo "Goodstock Deployment Summary"
+                    echo "======================================"
+
+                    echo "Image Tag: ${IMAGE_TAG}"
 
                     echo ""
-                    echo "Changed services:"
+                    echo "Changed Services:"
                     echo "API Gateway : ${API_GATEWAY_CHANGED}"
                     echo "Frontend    : ${FRONTEND_CHANGED}"
                     echo "Product     : ${PRODUCT_CHANGED}"
@@ -514,16 +518,23 @@ pipeline {
                     echo "User        : ${USER_CHANGED}"
 
                     echo ""
-                    echo "Current Kubernetes deployment images:"
+                    echo "Kubernetes Deployments:"
 
                     kubectl get deployments \
                       -n ${K8S_NAMESPACE} \
                       -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[*].image'
 
                     echo ""
-                    echo "Current pods:"
+                    echo "Pods:"
 
                     kubectl get pods \
+                      -n ${K8S_NAMESPACE} \
+                      -o wide
+
+                    echo ""
+                    echo "Services:"
+
+                    kubectl get svc \
                       -n ${K8S_NAMESPACE}
                 '''
             }
@@ -532,74 +543,76 @@ pipeline {
 
     post {
 
-    success {
-        echo 'CI/CD pipeline completed successfully.'
-        echo "Pipeline image tag: ${env.IMAGE_TAG}"
-    }
-
-    failure {
-
-        echo 'Pipeline failed. Starting automatic rollback.'
-
-        script {
-
-            if (env.ROLLBACK_ENABLED == 'true') {
-
-                if (env.API_GATEWAY_CHANGED == 'true') {
-                    sh '''
-                        kubectl rollout undo deployment/api-gateway \
-                        -n ${K8S_NAMESPACE} || true
-                    '''
-                }
-
-                if (env.FRONTEND_CHANGED == 'true') {
-                    sh '''
-                        kubectl rollout undo deployment/frontend-gateway \
-                        -n ${K8S_NAMESPACE} || true
-                    '''
-                }
-
-                if (env.PRODUCT_CHANGED == 'true') {
-                    sh '''
-                        kubectl rollout undo deployment/product-service \
-                        -n ${K8S_NAMESPACE} || true
-                    '''
-                }
-
-                if (env.ORDER_CHANGED == 'true') {
-                    sh '''
-                        kubectl rollout undo deployment/order-service \
-                        -n ${K8S_NAMESPACE} || true
-                    '''
-                }
-
-                if (env.USER_CHANGED == 'true') {
-                    sh '''
-                        kubectl rollout undo deployment/user-service \
-                        -n ${K8S_NAMESPACE} || true
-                    '''
-                }
-            }
+        success {
+            echo 'CI/CD pipeline completed successfully.'
+            echo "Image tag: ${env.IMAGE_TAG}"
         }
 
-        echo 'Collecting Kubernetes diagnostics.'
+        failure {
 
-        sh '''
-            kubectl get pods \
-              -n ${K8S_NAMESPACE} \
-              -o wide || true
+            echo 'Pipeline failed. Starting automatic rollback.'
 
-            kubectl get events \
-              -n ${K8S_NAMESPACE} \
-              --sort-by=.lastTimestamp \
-              | tail -40 || true
-        '''
-    }
+            script {
 
-    always {
-        sh '''
-            docker image prune -f || true
-        '''
+                if (env.ROLLBACK_ENABLED == 'true') {
+
+                    if (env.API_GATEWAY_CHANGED == 'true') {
+                        sh '''
+                            kubectl rollout undo deployment/api-gateway \
+                              -n ${K8S_NAMESPACE} || true
+                        '''
+                    }
+
+                    if (env.FRONTEND_CHANGED == 'true') {
+                        sh '''
+                            kubectl rollout undo deployment/frontend-gateway \
+                              -n ${K8S_NAMESPACE} || true
+                        '''
+                    }
+
+                    if (env.PRODUCT_CHANGED == 'true') {
+                        sh '''
+                            kubectl rollout undo deployment/product-service \
+                              -n ${K8S_NAMESPACE} || true
+                        '''
+                    }
+
+                    if (env.ORDER_CHANGED == 'true') {
+                        sh '''
+                            kubectl rollout undo deployment/order-service \
+                              -n ${K8S_NAMESPACE} || true
+                        '''
+                    }
+
+                    if (env.USER_CHANGED == 'true') {
+                        sh '''
+                            kubectl rollout undo deployment/user-service \
+                              -n ${K8S_NAMESPACE} || true
+                        '''
+                    }
+                }
+            }
+
+            echo 'Collecting Kubernetes diagnostics.'
+
+            sh '''
+                kubectl get pods \
+                  -n ${K8S_NAMESPACE} \
+                  -o wide || true
+
+                kubectl get events \
+                  -n ${K8S_NAMESPACE} \
+                  --sort-by=.lastTimestamp \
+                  | tail -40 || true
+            '''
+        }
+
+        always {
+            sh '''
+                docker logout ${ECR_REGISTRY} || true
+                docker image prune -f || true
+            '''
+        }
     }
 }
-}
+```
